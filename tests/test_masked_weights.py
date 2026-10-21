@@ -32,4 +32,38 @@ class MaskedWeightTests(unittest.TestCase):
         dense=model(Tensor(x)).data; sparse=model.predict_sparse(x)
         np.testing.assert_allclose(sparse,dense,atol=1e-12,rtol=1e-12)
 
+    
+    def test_revived_coordinate_uses_fresh_adam_bias_correction(self):
+        from engine import Tensor
+
+        model = MLP([2, 3, 2], seed=10)
+        opt = Adam(model.parameters(), lr=0.01)
+        layer = model.layers[0]
+        w = layer.weight
+        key = id(w)
+
+        # Simulate an optimizer that has already taken many steps.
+        opt.t = 50
+
+        # Revive one coordinate after resetting its optimizer state.
+        changed = np.zeros_like(layer.mask, dtype=bool)
+        changed[0, 0] = True
+        layer.mask[0, 0] = True
+        opt.on_mask_change(w, changed)
+
+        # Give the revived coordinate a known gradient.
+        for p in model.parameters():
+            p.zero_grad()
+        w.grad[0, 0] = 2.0
+
+        before = w.data[0, 0]
+        maskmap = {id(x.weight): x.mask for x in model.layers}
+        opt.step(maskmap)
+
+        # With a fresh coordinate, first-step Adam's update is approximately lr.
+        actual_update = before - w.data[0, 0]
+        self.assertAlmostEqual(actual_update, 0.01, places=6)
+        self.assertEqual(opt.age[key][0, 0], 1)
+    
+
 if __name__=='__main__': unittest.main()
